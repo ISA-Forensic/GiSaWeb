@@ -271,7 +271,14 @@
 				}
 			},
 			editorProps: {
-				attributes: { id },
+				attributes: { 
+					id,
+					spellcheck: 'false',
+					autocorrect: 'off',
+					autocapitalize: 'off',
+					'data-gramm_editor': 'false',
+					style: 'outline: none !important; border: none !important; box-shadow: none !important;'
+				},
 				handleDOMEvents: {
 					compositionstart: (view, event) => {
 						oncompositionstart(event);
@@ -282,8 +289,19 @@
 						return false;
 					},
 					focus: (view, event) => {
+						// Prevent ProseMirror from adding the "ProseMirror-focused" class
+						// by returning true to indicate we've handled the focus event
 						eventDispatch('focus', { event });
-						return false;
+						
+						// Remove the focused class if it gets added
+						setTimeout(() => {
+							const element = view.dom;
+							if (element && element.classList.contains('ProseMirror-focused')) {
+								element.classList.remove('ProseMirror-focused');
+							}
+						}, 0);
+						
+						return true; // Prevent default ProseMirror focus behavior
 					},
 					keyup: (view, event) => {
 						eventDispatch('keyup', { event });

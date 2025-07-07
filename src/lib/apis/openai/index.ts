@@ -421,3 +421,30 @@ export const synthesizeOpenAISpeech = async (
 
 	return res;
 };
+
+export const getOpenAIKnowledgeBasesDirect = async (url: string, key: string) => {
+	let error = null;
+
+	const res = await fetch(`${url}/api/v1/knowledge-bases`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			...(key && { authorization: `Bearer ${key}` })
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = `OpenAI: ${err?.error?.message ?? 'Network Problem'}`;
+			return [];
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};

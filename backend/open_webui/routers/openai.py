@@ -264,7 +264,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
             raise HTTPException(
                 status_code=r.status_code if r else 500,
-                detail=detail if detail else "Open WebUI: Server Connection Error",
+                detail=detail if detail else "GiSa: Server Connection Error",
             )
 
     except ValueError:
@@ -535,7 +535,7 @@ async def get_models(
                 # ClientError covers all aiohttp requests issues
                 log.exception(f"Client error: {str(e)}")
                 raise HTTPException(
-                    status_code=500, detail="Open WebUI: Server Connection Error"
+                    status_code=500, detail="GiSa: Server Connection Error"
                 )
             except Exception as e:
                 log.exception(f"Unexpected error: {e}")
@@ -546,6 +546,396 @@ async def get_models(
         models["data"] = await get_filtered_models(models, user)
 
     return models
+
+
+@router.get("/knowledge-bases")
+async def get_knowledge_bases(request: Request, user=Depends(get_verified_user)):
+    """
+    Get knowledge bases from external OpenAI-compatible API connections
+    """
+    # Import here to avoid circular imports
+    from open_webui.models.knowledge import Knowledges
+    
+    # Get local knowledge bases first
+    if user.role == "admin":
+        local_knowledge_bases = Knowledges.get_knowledge_bases()
+    else:
+        local_knowledge_bases = Knowledges.get_knowledge_bases_by_user_id(user.id, "write")
+    
+    # Convert to the expected format
+    knowledge_bases = []
+    for kb in local_knowledge_bases:
+        knowledge_bases.append({
+            "id": kb.id,
+            "name": kb.name,
+            "description": kb.description,
+            "source": "local",
+            "knowledge_base_id": getattr(kb, 'knowledge_base_id', kb.id),
+        })
+    
+    # Get external knowledge bases from OpenAI-compatible APIs
+    if request.app.state.config.ENABLE_OPENAI_API:
+        external_knowledge_bases = []
+        
+        # Fetch from each configured OpenAI API endpoint
+        for idx, (url, key) in enumerate(zip(
+            request.app.state.config.OPENAI_API_BASE_URLS,
+            request.app.state.config.OPENAI_API_KEYS
+        )):
+            if not url or not key:
+                continue
+                
+            api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+                str(idx),
+                request.app.state.config.OPENAI_API_CONFIGS.get(url, {})
+            )
+            
+            # Skip if this API connection is disabled
+            if not api_config.get("enable", True):
+                continue
+                
+            try:
+                # Handle Docker networking issues
+                fetch_url = url
+                if "host.docker.internal" in url:
+                    # Try to replace with localhost for testing
+                    test_url = url.replace("host.docker.internal", "localhost")
+                    log.info(f"Trying Docker networking: {url} and fallback: {test_url}")
+                
+                log.info(f"Fetching knowledge bases from {fetch_url}/knowledge-bases")
+                async with aiohttp.ClientSession(
+                    trust_env=True,
+                    timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST),
+                ) as session:
+                    headers = {
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    }
+                    
+                    # Try to fetch knowledge bases from the API
+                    async with session.get(
+                        f"{fetch_url}/knowledge-bases",
+                        headers=headers,
+                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ) as response:
+                        log.info(f"Knowledge bases API response: {response.status} from {fetch_url}")
+                        if response.status == 200:
+                            data = await response.json()
+                            log.info(f"Received knowledge bases data: {data}")
+                            
+                            # Handle both array and object responses
+                            kb_list = data if isinstance(data, list) else data.get("data", [])
+                            
+                            # Add external knowledge bases with proper formatting and permission filtering
+                            for kb in kb_list:
+                                external_kb = {
+                                    "id": f"external_{idx}_{kb.get('id', kb.get('knowledge_base_id', kb.get('name', 'unknown')))}",
+                                    "name": kb.get("name", kb.get("id", "Unknown Knowledge Base")),
+                                    "description": kb.get("description", "External knowledge base"),
+                                    "knowledge_base_id": kb.get("knowledge_base_id", "Unknown Knowledge Base"),
+                                    "source": "external",
+                                    "api_url": url,
+                                    "api_idx": idx,
+                                    "enabled": kb.get("enabled", True),
+                                    "external": True,
+                                    "access_control": kb.get("access_control"),  # Include access control from external KB
+                                    "user_id": kb.get("user_id")  # Include user_id from external KB
+                                }
+                                
+                                # Only add external knowledge bases that the user has access to
+                                # Admins see all, non-admins only see ones they have read access to
+                                if user.role == "admin":
+                                    external_knowledge_bases.append(external_kb)
+                                    log.info(f"Added external knowledge base for admin: {external_kb['name']}")
+                                else:
+                                    # Import here to avoid circular imports
+                                    from open_webui.utils.access_control import has_access
+                                    
+                                    # Check if user has read access to this external knowledge base
+                                    if (external_kb.get("user_id") == user.id or 
+                                        has_access(user.id, "read", external_kb.get("access_control"))):
+                                        external_knowledge_bases.append(external_kb)
+                                        log.info(f"Added external knowledge base for user {user.id}: {external_kb['name']}")
+                                    else:
+                                        log.info(f"User {user.id} does not have access to external knowledge base: {external_kb['name']}")
+                        elif response.status == 404:
+                            log.info(f"Knowledge bases endpoint not found at {fetch_url}/knowledge-bases")
+                        else:
+                            log.warning(f"Failed to fetch knowledge bases from {fetch_url}: HTTP {response.status}")
+                            
+            except aiohttp.ClientError as e:
+                log.warning(f"Network error fetching knowledge bases from {url}: {e}")
+                continue
+            except Exception as e:
+                log.error(f"Unexpected error fetching knowledge bases from {url}: {e}")
+                continue
+        
+        # Add external knowledge bases to the result
+        knowledge_bases.extend(external_knowledge_bases)
+    
+    return {"data": knowledge_bases}
+
+
+@router.post("/knowledge-bases/{id}/permissions")
+async def update_external_knowledge_base_permissions(
+    request: Request,
+    id: str,
+    permissions: dict,
+    user=Depends(get_admin_user)
+):
+    """
+    Update permissions for an external knowledge base.
+    This forwards the permission update to all configured external providers.
+    """
+    success_count = 0
+    failed_updates = []
+    
+    # Handle external knowledge base ID format
+    external_prefix = "external_"
+    if not id.startswith(external_prefix):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid external knowledge base ID format"
+        )
+    
+    # Extract the actual knowledge base ID by removing the external prefix and api index
+    parts = id.replace(external_prefix, "").split("_", 1)
+    if len(parts) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid external knowledge base ID format"
+        )
+    
+    api_idx = parts[0]
+    kb_id = parts[1]
+    
+    # Get the specific OpenAI API configuration
+    try:
+        api_idx_int = int(api_idx)
+        if (api_idx_int >= len(request.app.state.config.OPENAI_API_BASE_URLS) or
+            api_idx_int >= len(request.app.state.config.OPENAI_API_KEYS)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid API configuration index"
+            )
+        
+        url = request.app.state.config.OPENAI_API_BASE_URLS[api_idx_int]
+        key = request.app.state.config.OPENAI_API_KEYS[api_idx_int]
+        
+    except (ValueError, IndexError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid external knowledge base ID format"
+        )
+    
+    if not url or not key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="API configuration not found"
+        )
+        
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            }
+            
+            # Try to update permissions on external provider
+            try:
+                async with session.post(
+                    f"{url}/knowledge-bases/{kb_id}/permissions",
+                    headers=headers,
+                    json=permissions,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        log.info(f"Successfully updated permissions for KB {kb_id} on {url}")
+                        return result
+                    else:
+                        error_text = await response.text()
+                        log.warning(f"Failed to update permissions for KB {kb_id} on {url}: {response.status}")
+                        raise HTTPException(
+                            status_code=response.status,
+                            detail=f"External API error: {error_text}"
+                        )
+                        
+            except aiohttp.ClientError as e:
+                log.warning(f"Network error updating permissions for KB {kb_id} on {url}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Network error: {str(e)}"
+                )
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error updating permissions for KB {kb_id} on {url}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error: {str(e)}"
+        )
+
+
+@router.post("/knowledge-bases/bulk-permissions")
+async def bulk_update_external_knowledge_base_permissions(
+    request: Request,
+    bulk_data: dict,
+    user=Depends(get_admin_user)
+):
+    """
+    Bulk update permissions for multiple external knowledge bases.
+    This forwards the bulk permission updates to all configured external providers.
+    """
+    knowledge_base_ids = bulk_data.get("knowledge_base_ids", [])
+    access_control = bulk_data.get("access_control", {})
+    
+    total_success = 0
+    all_failed_updates = []
+    
+    # Group knowledge base IDs by their API provider
+    api_groups = {}
+    external_prefix = "external_"
+    
+    for kb_id in knowledge_base_ids:
+        if not kb_id.startswith(external_prefix):
+            all_failed_updates.append({
+                "id": kb_id,
+                "error": "Invalid external knowledge base ID format"
+            })
+            continue
+            
+        # Extract API index and actual KB ID
+        parts = kb_id.replace(external_prefix, "").split("_", 1)
+        if len(parts) < 2:
+            all_failed_updates.append({
+                "id": kb_id,
+                "error": "Invalid external knowledge base ID format"
+            })
+            continue
+            
+        api_idx = parts[0]
+        actual_kb_id = parts[1]
+        
+        if api_idx not in api_groups:
+            api_groups[api_idx] = []
+        api_groups[api_idx].append({
+            "external_id": kb_id,
+            "actual_id": actual_kb_id
+        })
+    
+    # Update permissions for each API provider group
+    for api_idx, kb_group in api_groups.items():
+        try:
+            api_idx_int = int(api_idx)
+            if (api_idx_int >= len(request.app.state.config.OPENAI_API_BASE_URLS) or
+                api_idx_int >= len(request.app.state.config.OPENAI_API_KEYS)):
+                for kb in kb_group:
+                    all_failed_updates.append({
+                        "id": kb["external_id"],
+                        "error": "Invalid API configuration index"
+                    })
+                continue
+            
+            url = request.app.state.config.OPENAI_API_BASE_URLS[api_idx_int]
+            key = request.app.state.config.OPENAI_API_KEYS[api_idx_int]
+            
+            if not url or not key:
+                for kb in kb_group:
+                    all_failed_updates.append({
+                        "id": kb["external_id"],
+                        "error": "API configuration not found"
+                    })
+                continue
+                
+        except (ValueError, IndexError):
+            for kb in kb_group:
+                all_failed_updates.append({
+                    "id": kb["external_id"],
+                    "error": "Invalid API configuration"
+                })
+            continue
+        
+        # Bulk update for this API provider
+        actual_kb_ids = [kb["actual_id"] for kb in kb_group]
+        
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json"
+                }
+                
+                # Try to bulk update permissions on external provider
+                try:
+                    async with session.post(
+                        f"{url}/knowledge-bases/bulk-permissions",
+                        headers=headers,
+                        json={
+                            "knowledge_base_ids": actual_kb_ids,
+                            "access_control": access_control
+                        },
+                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            provider_success = result.get("success_count", 0)
+                            total_success += provider_success
+                            
+                            # Map failures back to external IDs
+                            provider_failures = result.get("failed_updates", [])
+                            for failure in provider_failures:
+                                # Find the external ID that corresponds to this actual ID
+                                actual_id = failure.get("id")
+                                external_id = None
+                                for kb in kb_group:
+                                    if kb["actual_id"] == actual_id:
+                                        external_id = kb["external_id"]
+                                        break
+                                
+                                all_failed_updates.append({
+                                    "id": external_id or actual_id,
+                                    "error": failure.get("error", "Unknown error"),
+                                    "provider": url
+                                })
+                            
+                            log.info(f"Bulk updated {provider_success} KBs on {url}")
+                        else:
+                            error_text = await response.text()
+                            for kb in kb_group:
+                                all_failed_updates.append({
+                                    "id": kb["external_id"],
+                                    "error": f"HTTP {response.status}: {error_text}",
+                                    "provider": url
+                                })
+                            log.warning(f"Failed bulk update on {url}: {response.status}")
+                            
+                except aiohttp.ClientError as e:
+                    for kb in kb_group:
+                        all_failed_updates.append({
+                            "id": kb["external_id"],
+                            "error": f"Network error: {str(e)}",
+                            "provider": url
+                        })
+                    log.warning(f"Network error during bulk update on {url}: {e}")
+                    
+        except Exception as e:
+            for kb in kb_group:
+                all_failed_updates.append({
+                    "id": kb["external_id"],
+                    "error": f"Internal error: {str(e)}",
+                    "provider": url
+                })
+            log.error(f"Error during bulk update on {url}: {e}")
+    
+    return {
+        "success_count": total_success,
+        "total_requested": len(knowledge_base_ids),
+        "failed_updates": all_failed_updates
+    }
 
 
 class ConnectionVerificationForm(BaseModel):
@@ -625,7 +1015,7 @@ async def verify_connection(
             # ClientError covers all aiohttp requests issues
             log.exception(f"Client error: {str(e)}")
             raise HTTPException(
-                status_code=500, detail="Open WebUI: Server Connection Error"
+                status_code=500, detail="GiSa: Server Connection Error"
             )
         except Exception as e:
             log.exception(f"Unexpected error: {e}")
@@ -878,7 +1268,7 @@ async def generate_chat_completion(
 
         raise HTTPException(
             status_code=r.status if r else 500,
-            detail=detail if detail else "Open WebUI: Server Connection Error",
+            detail=detail if detail else "GiSa: Server Connection Error",
         )
     finally:
         if not streaming and session:
@@ -978,7 +1368,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
                 detail = f"External: {e}"
         raise HTTPException(
             status_code=r.status if r else 500,
-            detail=detail if detail else "Open WebUI: Server Connection Error",
+            detail=detail if detail else "GiSa: Server Connection Error",
         )
     finally:
         if not streaming and session:

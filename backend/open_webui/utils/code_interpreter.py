@@ -5,7 +5,15 @@ import uuid
 from typing import Optional
 
 import aiohttp
-import websockets
+
+# Optional websockets import for ultra-slim builds
+try:
+    import websockets
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    websockets = None
+    WEBSOCKETS_AVAILABLE = False
+
 from pydantic import BaseModel
 
 from open_webui.env import SRC_LOG_LEVELS
@@ -126,6 +134,11 @@ class JupyterCodeExecuter:
         return websocket_url, ws_headers
 
     async def execute_code(self) -> None:
+        if not WEBSOCKETS_AVAILABLE:
+            logger.error("Code interpreter feature not available: websockets not installed")
+            self.result.stderr = "Code interpreter feature not available: websockets not installed"
+            return
+            
         # initialize ws
         websocket_url, ws_headers = self.init_ws()
         # execute

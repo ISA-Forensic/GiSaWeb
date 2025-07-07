@@ -7,7 +7,14 @@ from html import escape
 from markdown import markdown
 
 import site
-from fpdf import FPDF
+
+# Optional fpdf import for ultra-slim builds
+try:
+    from fpdf import FPDF
+    FPDF_AVAILABLE = True
+except ImportError:
+    FPDF = None
+    FPDF_AVAILABLE = False
 
 from open_webui.env import STATIC_DIR, FONTS_DIR
 from open_webui.models.chats import ChatTitleMessagesForm
@@ -98,6 +105,9 @@ class PDFGenerator:
         """
         Generate a PDF from chat messages.
         """
+        if not FPDF_AVAILABLE:
+            raise ImportError("PDF generation not available: fpdf2 not installed")
+            
         try:
             global FONTS_DIR
 

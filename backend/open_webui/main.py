@@ -88,7 +88,7 @@ from open_webui.routers.retrieval import (
     get_rf,
 )
 
-from open_webui.internal.db import Session, engine
+from open_webui.internal.db import Session, engine, get_db
 
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
@@ -499,7 +499,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Open WebUI",
+    title="GiSa",
     docs_url="/docs" if ENV == "dev" else None,
     openapi_url="/openapi.json" if ENV == "dev" else None,
     redoc_url=None,
@@ -1197,6 +1197,326 @@ async def get_base_models(request: Request, user=Depends(get_admin_user)):
     return {"data": models}
 
 
+@app.get("/api/v1/knowledge-bases")
+async def get_knowledge_bases_proxy(request: Request, user=Depends(get_verified_user)):
+    """
+    Get knowledge bases from external APIs and apply local permission filtering.
+    """
+    from open_webui.models.knowledge import Knowledges
+    from open_webui.utils.access_control import has_access
+    
+    external_knowledge_bases = []
+    
+    # Get external knowledge bases from OpenAI-compatible APIs
+    if request.app.state.config.ENABLE_OPENAI_API:
+        
+        # Fetch from each configured OpenAI API endpoint
+        for idx, (url, key) in enumerate(zip(
+            request.app.state.config.OPENAI_API_BASE_URLS,
+            request.app.state.config.OPENAI_API_KEYS
+        )):
+            if not url or not key:
+                continue
+                
+            api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+                str(idx),
+                request.app.state.config.OPENAI_API_CONFIGS.get(url, {})
+            )
+            
+            # Skip if this API connection is disabled
+            if not api_config.get("enable", True):
+                continue
+                
+            try:
+                fetch_url = url
+                log.info(f"Fetching knowledge bases from {fetch_url}/knowledge-bases")
+                async with aiohttp.ClientSession(
+                    trust_env=True,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as session:
+                    headers = {
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    }
+                    
+                    # Try to fetch knowledge bases from the API
+                    async with session.get(
+                        f"{fetch_url}/knowledge-bases",
+                        headers=headers,
+                        ssl=False,
+                    ) as response:
+                        log.info(f"Knowledge bases API response: {response.status} from {fetch_url}")
+                        if response.status == 200:
+                            data = await response.json()
+                            log.info(f"Received knowledge bases data: {data}")
+                            
+                            # Handle both array and object responses
+                            kb_list = data if isinstance(data, list) else data.get("data", [])
+                            
+                            # Add external knowledge bases with local permission filtering
+                            for kb in kb_list:
+                                external_id = f"external_{idx}_{kb.get('id', kb.get('knowledge_base_id', kb.get('name', 'unknown')))}"
+                                
+                                # Check if we have local permissions stored for this external KB
+                                local_kb = Knowledges.get_knowledge_by_id(external_id)
+                                
+                                # Apply permission filtering
+                                if user.role == "admin":
+                                    # Admins see all knowledge bases
+                                    can_access = True
+                                elif local_kb:
+                                    # Use local permissions if they exist
+                                    can_access = (
+                                        local_kb.user_id == user.id or 
+                                        has_access(user.id, "read", local_kb.access_control)
+                                    )
+                                else:
+                                    # If no local permissions, default to public access
+                                    can_access = True
+                                
+                                if can_access:
+                                    external_kb = {
+                                        "id": external_id,
+                                        "name": kb.get("name", kb.get("id", "Unknown Knowledge Base")),
+                                        "description": kb.get("description", "External knowledge base"),
+                                        "knowledge_base_id": kb.get("knowledge_base_id", "Unknown Knowledge Base"),
+                                        "source": "external",
+                                        "api_url": url,
+                                        "api_idx": idx,
+                                        "enabled": kb.get("enabled", True),
+                                        "external": True,
+                                        # Include local permissions if they exist
+                                        "access_control": local_kb.access_control if local_kb else None,
+                                        "user_id": local_kb.user_id if local_kb else user.id,  # Default to current admin user
+                                    }
+                                    
+                                    # Add permission details for frontend
+                                    if local_kb and local_kb.access_control:
+                                        from open_webui.models.users import Users
+                                        from open_webui.models.groups import Groups
+                                        
+                                        # Get read permissions
+                                        read_perms = local_kb.access_control.get("read", {})
+                                        read_user_ids = read_perms.get("user_ids", [])
+                                        read_group_ids = read_perms.get("group_ids", [])
+                                        
+                                        # Get write permissions  
+                                        write_perms = local_kb.access_control.get("write", {})
+                                        write_user_ids = write_perms.get("user_ids", [])
+                                        write_group_ids = write_perms.get("group_ids", [])
+                                        
+                                        # Populate user details
+                                        external_kb["users_with_read_access"] = [
+                                            {"id": uid, "name": Users.get_user_by_id(uid).name if Users.get_user_by_id(uid) else "Unknown"}
+                                            for uid in read_user_ids
+                                        ]
+                                        external_kb["users_with_write_access"] = [
+                                            {"id": uid, "name": Users.get_user_by_id(uid).name if Users.get_user_by_id(uid) else "Unknown"}
+                                            for uid in write_user_ids
+                                        ]
+                                        
+                                        # Populate group details
+                                        external_kb["groups_with_read_access"] = [
+                                            {"id": gid, "name": Groups.get_group_by_id(gid).name if Groups.get_group_by_id(gid) else "Unknown"}
+                                            for gid in read_group_ids
+                                        ]
+                                        external_kb["groups_with_write_access"] = [
+                                            {"id": gid, "name": Groups.get_group_by_id(gid).name if Groups.get_group_by_id(gid) else "Unknown"}
+                                            for gid in write_group_ids
+                                        ]
+                                    else:
+                                        # No local permissions or access control
+                                        external_kb["users_with_read_access"] = []
+                                        external_kb["users_with_write_access"] = []
+                                        external_kb["groups_with_read_access"] = []
+                                        external_kb["groups_with_write_access"] = []
+                                    
+                                    external_knowledge_bases.append(external_kb)
+                                    log.info(f"Added external knowledge base for user {user.id}: {external_kb['name']}")
+                                else:
+                                    log.info(f"User {user.id} does not have access to external knowledge base: {kb.get('name', 'Unknown')}")
+                                    
+                        elif response.status == 404:
+                            log.info(f"Knowledge bases endpoint not found at {fetch_url}/knowledge-bases")
+                        else:
+                            log.warning(f"Failed to fetch knowledge bases from {fetch_url}: HTTP {response.status}")
+                            
+            except aiohttp.ClientError as e:
+                log.warning(f"Network error fetching knowledge bases from {url}: {e}")
+                continue
+            except Exception as e:
+                log.error(f"Unexpected error fetching knowledge bases from {url}: {e}")
+                continue
+    
+    return {"data": external_knowledge_bases}
+
+
+@app.post("/api/v1/knowledge-bases/{id}/permissions")
+async def update_knowledge_base_permissions_local(
+    request: Request,
+    id: str,
+    permissions: dict,
+    user=Depends(get_admin_user)
+):
+    """
+    Update permissions for an external knowledge base stored locally.
+    """
+    from open_webui.models.knowledge import Knowledges, KnowledgeForm
+    import time
+    
+    try:
+        # Check if local permissions already exist
+        local_kb = Knowledges.get_knowledge_by_id(id)
+        
+        if local_kb:
+            # Update existing permissions
+            form_data = KnowledgeForm(
+                name=local_kb.name,
+                description=local_kb.description,
+                data=local_kb.data,
+                access_control=permissions.get("access_control")
+            )
+            updated_kb = Knowledges.update_knowledge_by_id(id, form_data)
+            if updated_kb:
+                return {
+                    "id": updated_kb.id,
+                    "name": updated_kb.name,
+                    "description": updated_kb.description,
+                    "user_id": updated_kb.user_id,
+                    "access_control": updated_kb.access_control,
+                    "users_with_read_access": [],  # You can expand this later
+                    "users_with_write_access": [],
+                    "groups_with_read_access": [],
+                    "groups_with_write_access": []
+                }
+        else:
+            # Create new local permissions record for external KB
+            form_data = KnowledgeForm(
+                name=f"External KB {id}",
+                description="External knowledge base permissions",
+                data={"external": True},
+                access_control=permissions.get("access_control")
+            )
+            new_kb = Knowledges.insert_new_knowledge(user.id, form_data)
+            if new_kb:
+                # Update the ID to match the external KB ID
+                with get_db() as db:
+                    from open_webui.models.knowledge import Knowledge
+                    db.query(Knowledge).filter_by(id=new_kb.id).update({"id": id})
+                    db.commit()
+                
+                return {
+                    "id": id,
+                    "name": form_data.name,
+                    "description": form_data.description,
+                    "user_id": user.id,
+                    "access_control": form_data.access_control,
+                    "users_with_read_access": [],
+                    "users_with_write_access": [],
+                    "groups_with_read_access": [],
+                    "groups_with_write_access": []
+                }
+        
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update permissions"
+        )
+        
+    except Exception as e:
+        log.exception(f"Error updating knowledge base permissions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update knowledge base permissions: {str(e)}"
+        )
+
+
+@app.post("/api/v1/knowledge-bases/bulk-permissions")
+async def bulk_update_knowledge_base_permissions_local(
+    request: Request,
+    bulk_data: dict,
+    user=Depends(get_admin_user)
+):
+    """
+    Bulk update permissions for multiple external knowledge bases stored locally.
+    """
+    from open_webui.models.knowledge import Knowledges, KnowledgeForm
+    
+    try:
+        knowledge_base_ids = bulk_data.get("knowledge_base_ids", [])
+        access_control = bulk_data.get("access_control", {})
+        
+        success_count = 0
+        failed_updates = []
+        
+        for kb_id in knowledge_base_ids:
+            try:
+                # Check if local permissions already exist
+                local_kb = Knowledges.get_knowledge_by_id(kb_id)
+                
+                if local_kb:
+                    # Update existing permissions
+                    form_data = KnowledgeForm(
+                        name=local_kb.name,
+                        description=local_kb.description,
+                        data=local_kb.data,
+                        access_control=access_control
+                    )
+                    updated_kb = Knowledges.update_knowledge_by_id(kb_id, form_data)
+                    if updated_kb:
+                        success_count += 1
+                    else:
+                        failed_updates.append({
+                            "id": kb_id,
+                            "error": "Failed to update existing permissions"
+                        })
+                else:
+                    # Create new local permissions record for external KB
+                    form_data = KnowledgeForm(
+                        name=f"External KB {kb_id}",
+                        description="External knowledge base permissions",
+                        data={"external": True},
+                        access_control=access_control
+                    )
+                    new_kb = Knowledges.insert_new_knowledge(user.id, form_data)
+                    if new_kb:
+                        # Update the ID to match the external KB ID
+                        with get_db() as db:
+                            from open_webui.models.knowledge import Knowledge
+                            db.query(Knowledge).filter_by(id=new_kb.id).update({"id": kb_id})
+                            db.commit()
+                        success_count += 1
+                    else:
+                        failed_updates.append({
+                            "id": kb_id,
+                            "error": "Failed to create new permissions"
+                        })
+                        
+            except Exception as e:
+                failed_updates.append({
+                    "id": kb_id,
+                    "error": str(e)
+                })
+        
+        return {
+            "success_count": success_count,
+            "total_requested": len(knowledge_base_ids),
+            "failed_updates": failed_updates
+        }
+        
+    except Exception as e:
+        log.exception(f"Error bulk updating knowledge base permissions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to bulk update knowledge base permissions: {str(e)}"
+        )
+
+
+
+
+
+
+
+
 @app.post("/api/chat/completions")
 async def chat_completion(
     request: Request,
@@ -1579,7 +1899,7 @@ async def get_manifest_json():
         return {
             "name": app.state.WEBUI_NAME,
             "short_name": app.state.WEBUI_NAME,
-            "description": "Open WebUI is an open, extensible, user-friendly interface for AI that adapts to your workflow.",
+            "description": "GiSa is an open, extensible, user-friendly interface for AI that adapts to your workflow.",
             "start_url": "/",
             "display": "standalone",
             "background_color": "#343541",

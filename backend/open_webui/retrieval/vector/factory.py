@@ -52,4 +52,10 @@ class Vector:
                 raise ValueError(f"Unsupported vector type: {vector_type}")
 
 
-VECTOR_DB_CLIENT = Vector.get_vector(VECTOR_DB)
+try:
+    VECTOR_DB_CLIENT = Vector.get_vector(VECTOR_DB)
+except (ImportError, ModuleNotFoundError, ValueError) as e:
+    # For ultra-slim builds or missing dependencies, create a dummy client
+    import logging
+    logging.warning(f"Vector DB '{VECTOR_DB}' not available: {e}. Vector features will be disabled.")
+    VECTOR_DB_CLIENT = None

@@ -25,8 +25,14 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-import tiktoken
 
+# Optional tiktoken import for ultra-slim builds
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    tiktoken = None
+    TIKTOKEN_AVAILABLE = False
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
 from langchain_core.documents import Document
@@ -1108,17 +1114,25 @@ def save_docs_to_vector_db(
                 add_start_index=True,
             )
         elif request.app.state.config.TEXT_SPLITTER == "token":
-            log.info(
-                f"Using token text splitter: {request.app.state.config.TIKTOKEN_ENCODING_NAME}"
-            )
+            if not TIKTOKEN_AVAILABLE:
+                log.warning("tiktoken not available, falling back to recursive character text splitter")
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=request.app.state.config.CHUNK_SIZE,
+                    chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
+                    add_start_index=True,
+                )
+            else:
+                log.info(
+                    f"Using token text splitter: {request.app.state.config.TIKTOKEN_ENCODING_NAME}"
+                )
 
-            tiktoken.get_encoding(str(request.app.state.config.TIKTOKEN_ENCODING_NAME))
-            text_splitter = TokenTextSplitter(
-                encoding_name=str(request.app.state.config.TIKTOKEN_ENCODING_NAME),
-                chunk_size=request.app.state.config.CHUNK_SIZE,
-                chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
-                add_start_index=True,
-            )
+                tiktoken.get_encoding(str(request.app.state.config.TIKTOKEN_ENCODING_NAME))
+                text_splitter = TokenTextSplitter(
+                    encoding_name=str(request.app.state.config.TIKTOKEN_ENCODING_NAME),
+                    chunk_size=request.app.state.config.CHUNK_SIZE,
+                    chunk_overlap=request.app.state.config.CHUNK_OVERLAP,
+                    add_start_index=True,
+                )
         else:
             raise ValueError(ERROR_MESSAGES.DEFAULT("Invalid text splitter"))
 

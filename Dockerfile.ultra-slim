@@ -1,0 +1,101 @@
+# Ultra-slim variant - removes many features for minimum size
+# Build with: docker build -f Dockerfile.ultra-slim -t gisaweb-ultra .
+
+FROM --platform=$BUILDPLATFORM node:22-alpine3.20 AS build
+ARG BUILD_HASH
+
+WORKDIR /app
+
+# Minimal frontend build
+RUN apk add --no-cache git
+
+COPY package.json package-lock.json ./
+# Remove package-lock.json and do fresh install to avoid platform conflicts
+RUN rm -f package-lock.json && \
+    npm install --prefer-offline --no-audit
+
+COPY . .
+
+ENV APP_BUILD_HASH=${BUILD_HASH}
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+
+# Ultra-aggressive cleanup with platform fix
+RUN npm run build && \
+    # Remove source files but keep build output and package.json
+    rm -rf node_modules .svelte-kit src static/assets/emojis cypress test docs && \
+    find /app -type f -name "*.map" -delete && \
+    find /app -type f -name "*.ts" -not -path "*/build/*" -delete && \
+    find /app -type f -name "*.js" -not -path "*/build/*" -delete && \
+    # Clean npm cache
+    npm cache clean --force && \
+    rm -rf /root/.npm /tmp/*
+
+######## Ultra-slim backend ########
+FROM python:3.11-alpine3.19 AS base
+
+ARG UID=0
+ARG GID=0
+
+# Minimal environment - no ML models pre-installed  
+ENV ENV=prod \
+    PORT=8080 \
+    SCARF_NO_ANALYTICS=true \
+    DO_NOT_TRACK=true \
+    ANONYMIZED_TELEMETRY=false \
+    ENABLE_SIGNUP=True \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VECTOR_DB=""
+
+WORKDIR /app/backend
+
+# Create minimal user setup
+RUN if [ $UID -ne 0 ]; then \
+        addgroup -g ${GID:-1000} app 2>/dev/null || true; \
+        adduser -u $UID -G app -h /home/app -D app; \
+    fi && \
+    mkdir -p /app/backend/data && \
+    chown -R $UID:$GID /app
+
+# Install only essential packages
+COPY ./backend/requirements.txt ./
+
+# Install system dependencies first
+RUN apk add --no-cache --virtual .runtime-deps curl jq wget bash && \
+    apk add --no-cache --virtual .build-deps \
+        build-base gcc musl-dev python3-dev git linux-headers
+
+# Create filtered requirements - exclude heavy ML packages AND build-problematic packages
+RUN grep -v -E '^(colbert-ai|einops|torch|torchvision|torchaudio|faster-whisper|opencv-python|pymilvus|qdrant-client|playwright|opencv-python-headless|rapidocr-onnxruntime|soundfile|azure-ai-documentintelligence|pillow|extract_msg|tiktoken|psutil|sentencepiece|unstructured|fpdf2|onnxruntime|transformers|sentence-transformers|accelerate|chromadb)' requirements.txt > requirements-slim.txt && \
+    head -10 requirements-slim.txt && \
+    grep uvicorn requirements-slim.txt
+
+# Install filtered requirements with timeout and retry settings
+RUN pip install --no-cache-dir --timeout=300 --retries=3 -r requirements-slim.txt && \
+    pip install --no-cache-dir uvicorn[standard] fastapi typer itsdangerous beautifulsoup4 markdown python-dotenv
+
+# Cleanup
+RUN apk del .build-deps && \
+    find /usr/local -name "*.pyc" -delete && \
+    find /usr/local -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
+    rm -rf /root/.cache /tmp/* /var/cache/apk/* requirements.txt requirements-slim.txt
+
+# Copy only essential files
+COPY --chown=$UID:$GID --from=build /app/build /app/build
+COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
+COPY --chown=$UID:$GID ./backend/open_webui /app/backend/open_webui
+COPY --chown=$UID:$GID ./backend/start.sh /app/backend/
+COPY --chown=$UID:$GID ./CHANGELOG.md /app/
+
+EXPOSE 8080
+
+# Minimal healthcheck
+HEALTHCHECK --interval=60s --timeout=3s --start-period=30s --retries=1 \
+    CMD wget -q --spider http://localhost:8080/health || exit 1
+
+USER $UID:$GID
+
+ENV DOCKER=true
+CMD [ "bash", "start.sh"] 

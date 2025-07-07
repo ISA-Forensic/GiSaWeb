@@ -21,6 +21,7 @@
 
 	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import ModelSelector from '../chat/ModelSelector.svelte';
+	import KnowledgeSelector from '../chat/KnowledgeSelector.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Menu from '$lib/components/layout/Navbar/Menu.svelte';
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
@@ -39,7 +40,9 @@
 	export let chat;
 	export let history;
 	export let selectedModels;
+	export let selectedKnowledgeBases = [''];
 	export let showModelSelector = true;
+	export let showKnowledgeSelector = true;
 
 	let showShareChatModal = false;
 	let showDownloadChatModal = false;
@@ -79,9 +82,25 @@
 			{$showSidebar ? 'ml-1' : ''}
 			"
 				>
-					{#if showModelSelector}
-						<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
-					{/if}
+					<!-- Responsive layout: stack vertically on mobile, side by side on larger screens -->
+					<div class="flex flex-col sm:flex-row gap-1 sm:gap-2 md:gap-3 lg:gap-4 items-stretch sm:items-center sm:justify-between">
+						{#if showModelSelector}
+							<div class="flex-1 min-w-0 w-full sm:max-w-[48%] md:max-w-[45%] lg:max-w-[42%]">
+								<ModelSelector 
+									bind:selectedModels 
+									showSetDefault={!shareEnabled}
+								/>
+							</div>
+						{/if}
+						{#if showKnowledgeSelector}
+							<div class="flex-1 min-w-0 w-full sm:max-w-[48%] md:max-w-[45%] lg:max-w-[42%] {showModelSelector ? '' : 'sm:ml-auto'}">
+								<KnowledgeSelector 
+									bind:selectedKnowledgeBases 
+									showSetDefault={!shareEnabled}
+								/>
+							</div>
+						{/if}
+					</div>
 				</div>
 
 				<div class="self-start flex flex-none items-center text-gray-600 dark:text-gray-400">

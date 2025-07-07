@@ -1,20 +1,132 @@
-.github
+# Version control
+.git*
+.svn
+.hg
+
+# Documentation and README files
+README*
+*.md
+!CHANGELOG.md
+docs/
+*.txt
+*.rst
+
+# Development and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 .DS_Store
-docs
-kubernetes
-node_modules
-/.svelte-kit
-/package
-.env
-.env.*
-vite.config.js.timestamp-*
-vite.config.ts.timestamp-*
-__pycache__
-.idea
-venv
-_old
-uploads
-.ipynb_checkpoints
-**/*.db
-_test
-backend/data/*
+Thumbs.db
+.editorconfig
+.prettierrc*
+.eslintrc*
+
+# Node.js and frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn
+package-lock.json.bak
+.next/
+.nuxt/
+.cache/
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env*
+.venv/
+venv/
+env/
+pip-log.txt
+.pytest_cache/
+.tox/
+.coverage
+.mypy_cache/
+
+# Testing
+test/
+tests/
+**/test_*
+**/*_test.py
+**/*.test.js
+**/*.spec.js
+coverage/
+.nyc_output
+cypress/
+jest.config.js
+
+# Build artifacts and cache
+build/
+dist/
+.svelte-kit/
+.output/
+.temp/
+*.tmp
+target/
+*.log
+
+# Media and large files
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.wmv
+*.flv
+*.webm
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.wma
+*.pdf
+*.zip
+*.tar
+*.gz
+*.bz2
+*.xz
+*.7z
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# OS generated files
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Backend data and cache directories
+backend/data/cache/
+backend/data/uploads/
+backend/data/vector_db/
+backend/.webui_secret_key
+backend/*.db
+backend/*.sqlite*
+
+# Frontend static assets that are large
+static/assets/emojis/
+static/pyodide/
+src/lib/pyodide/
+
+# Configuration backups
+*.bak
+*.backup
+*.old
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+**/node_modules
+**/.git

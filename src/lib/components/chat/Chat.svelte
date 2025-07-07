@@ -20,6 +20,7 @@
 		config,
 		type Model,
 		models,
+		knowledge,
 		tags as allTags,
 		settings,
 		showSidebar,
@@ -79,6 +80,7 @@
 		getTaskIdsByChatId
 	} from '$lib/apis';
 	import { getTools } from '$lib/apis/tools';
+	import { getKnowledgeBases } from '$lib/apis/knowledge';
 
 	import Banner from '../common/Banner.svelte';
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
@@ -119,6 +121,10 @@
 	let atSelectedModel: Model | undefined;
 	let selectedModelIds = [];
 	$: selectedModelIds = atSelectedModel !== undefined ? [atSelectedModel.id] : selectedModels;
+
+	let selectedKnowledgeBases = [''];
+	let selectedKnowledgeBaseIds = [];
+	$: selectedKnowledgeBaseIds = selectedKnowledgeBases;
 
 	let selectedToolIds = [];
 	let selectedFilterIds = [];
@@ -429,6 +435,19 @@
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('chat-events', chatEventHandler);
+
+		// Initialize knowledge bases
+		if (!$knowledge) {
+			try {
+				knowledge.set(await getKnowledgeBases(
+					localStorage.token,
+					$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
+				));
+			} catch (error) {
+				console.error('Failed to load knowledge bases:', error);
+				knowledge.set([]);
+			}
+		}
 
 		if (!$chatId) {
 			chatIdUnsubscriber = chatId.subscribe(async (value) => {
@@ -763,6 +782,26 @@
 			}
 		}
 
+		// Initialize knowledge bases
+		const availableKnowledgeBases = $knowledge
+			?.filter((kb) => kb.id)
+			.map((kb) => kb.id) ?? [];
+
+		if ($settings?.knowledgeBases && Array.isArray($settings.knowledgeBases)) {
+			selectedKnowledgeBases = $settings.knowledgeBases;
+		} else {
+			selectedKnowledgeBases = [''];
+		}
+
+		selectedKnowledgeBases = selectedKnowledgeBases.filter((selId) => {
+			const kb = ($knowledge || []).find((k) => k.id === selId);
+			return kb && kb.knowledge_base_id;
+		});
+
+		if (selectedKnowledgeBases.length === 0) {
+			selectedKnowledgeBases = [''];
+		}
+
 		await showControls.set(false);
 		await showCallOverlay.set(false);
 		await showOverview.set(false);
@@ -933,7 +972,15 @@
 			model_item: $models.find((m) => m.id === modelId),
 			chat_id: chatId,
 			session_id: $socket?.id,
-			id: responseMessageId
+			id: responseMessageId,
+			knowledge_base_id: selectedKnowledgeBases
+				.filter((selId) => {
+					const kb = ($knowledge || []).find((k) => k.id === selId);
+					return kb && kb.knowledge_base_id;
+				})
+				.map((selId) => ($knowledge || []).find((k) => k.id === selId).knowledge_base_id)
+				.join(','),
+			user_name: $user?.name ?? undefined
 		}).catch((error) => {
 			toast.error(`${error}`);
 			messages.at(-1).error = { content: error };
@@ -1378,8 +1425,7 @@
 		chatFiles.push(..._files.filter((item) => ['doc', 'file', 'collection'].includes(item.type)));
 		chatFiles = chatFiles.filter(
 			// Remove duplicates
-			(item, index, array) =>
-				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
+			(item, index, array) => array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
 		);
 
 		files = [];
@@ -1544,10 +1590,10 @@
 			),
 			...(responseMessage?.files ?? []).filter((item) => ['web_search_results'].includes(item.type))
 		);
+
 		// Remove duplicates
 		files = files.filter(
-			(item, index, array) =>
-				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
+			(item, index, array) => array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
 		);
 
 		scrollToBottom();
@@ -1615,32 +1661,125 @@
 			}))
 			.filter((message) => message?.role === 'user' || message?.content?.trim());
 
-		const res = await generateOpenAIChatCompletion(
-			localStorage.token,
-			{
+		// Helper function to extract AWS knowledge base ID from different possible field names
+		function getAwsKbId(kb) {
+			// Temporary hardcoded mapping for known external KBs
+			if (kb.id === 'external_0_wealthstone') return 'PLD6ZMTYSU';
+			if (kb.id === 'external_0_check') return 'AAAAAA';
+			return kb.knowledge_base_id || kb.knowledgeBaseId || kb.id || '';
+		}
+
+		// Build knowledge_base_id string and project name
+		let selectedKnowledgeBase = null;
+		let knowledgeBaseIdStr = '';
+		let projectName = 'default';
+
+		// Find the first selected knowledge base with a valid knowledge_base_id
+		for (const selId of selectedKnowledgeBases) {
+			const kb = ($knowledge || []).find((k) => k.id === selId);
+			if (kb) {
+				const kbId = getAwsKbId(kb);
+				if (kbId) {
+					selectedKnowledgeBase = kb;
+					knowledgeBaseIdStr = kbId;
+					projectName = kb.name || kb.title || 'default';
+					break;
+				}
+			}
+		}
+
+		console.log('Debug KB Selection:');
+		console.log('- selectedKnowledgeBases:', selectedKnowledgeBases);
+		console.log('- $knowledge:', $knowledge);
+		
+		// Debug each knowledge base structure
+		if ($knowledge) {
+			$knowledge.forEach((kb, index) => {
+				console.log(`- KB[${index}]:`, {
+					id: kb.id,
+					name: kb.name,
+					title: kb.title,
+					knowledge_base_id: kb.knowledge_base_id,
+					knowledgeBaseId: kb.knowledgeBaseId,
+					fullObject: kb
+				});
+			});
+		}
+		
+		// Debug selection process
+		selectedKnowledgeBases.forEach((selId, index) => {
+			const kb = ($knowledge || []).find((k) => k.id === selId);
+			console.log(`- Selection[${index}] (${selId}):`, {
+				found: !!kb,
+				hasKnowledgeBaseId: !!kb?.knowledge_base_id,
+				kb: kb
+			});
+		});
+		
+		console.log('- selectedKnowledgeBase:', selectedKnowledgeBase);
+		console.log('Selected KB object:', selectedKnowledgeBase);
+		console.log('Selected KB knowledge_base_id:', selectedKnowledgeBase?.knowledge_base_id);
+
+		// If no selected knowledge base found, fall back to first available
+		if (!selectedKnowledgeBase) {
+			const fallbackKb = ($knowledge || []).find((kb) => getAwsKbId(kb));
+			console.log('- fallbackKb:', fallbackKb);
+			if (fallbackKb) {
+				selectedKnowledgeBase = fallbackKb;
+				knowledgeBaseIdStr = getAwsKbId(fallbackKb);
+				projectName = fallbackKb.name || fallbackKb.title || 'default';
+			} else {
+				// If no knowledge bases are available at all, skip knowledge base usage
+				knowledgeBaseIdStr = '';
+				projectName = '';
+			}
+		}
+
+		console.log('- Final knowledgeBaseIdStr:', knowledgeBaseIdStr);
+		console.log('- Final projectName:', projectName);
+
+		const userNameStr = $user?.name ?? 'user';
+
+		// Prepare payload
+		let payload: any = {};
+		console.log('Debug: Model connection type:', model?.connection_type);
+		
+		// Ensure both required fields always have a value
+		const finalKnowledgeBaseId = knowledgeBaseIdStr || 'default';
+		const finalUserName = userNameStr || 'user';
+
+		if (model?.connection_type === 'external') {
+			// External API expects only a whitelisted set of fields
+			payload = {
+				stream: stream,
+				model: model.id,
+				messages: messages,
+				knowledge_base_id: finalKnowledgeBaseId,
+				user_name: finalUserName
+			};
+		} else {
+			payload = {
 				stream: stream,
 				model: model.id,
 				messages: messages,
 				params: {
 					...$settings?.params,
 					...params,
-
 					format: $settings.requestFormat ?? undefined,
 					keep_alive: $settings.keepAlive ?? undefined,
 					stop:
 						(params?.stop ?? $settings?.params?.stop ?? undefined)
-							? (params?.stop.split(',').map((token) => token.trim()) ?? $settings.params.stop).map(
-									(str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"'))
-								)
+							? (params?.stop.split(',').map((token) => token.trim()) ?? $settings.params.stop).map((str) =>
+								decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"'))
+							)
 							: undefined
 				},
-
 				files: (files?.length ?? 0) > 0 ? files : undefined,
-
+				knowledge_base_id: finalKnowledgeBaseId,
+				user_name: finalUserName,
 				filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
 				tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
 				tool_servers: $toolServers,
-
 				features: {
 					image_generation:
 						$config?.features?.enable_image_generation &&
@@ -1664,42 +1803,42 @@
 						$user?.name,
 						$settings?.userLocation
 							? await getAndUpdateUserLocation(localStorage.token).catch((err) => {
-									console.error(err);
-									return undefined;
-								})
+								console.error(err);
+								return undefined;
+							})
 							: undefined
 					)
 				},
 				model_item: $models.find((m) => m.id === model.id),
-
 				session_id: $socket?.id,
 				chat_id: $chatId,
 				id: responseMessageId,
-
 				...(!$temporaryChatEnabled &&
-				(messages.length == 1 ||
-					(messages.length == 2 &&
-						messages.at(0)?.role === 'system' &&
-						messages.at(1)?.role === 'user')) &&
-				(selectedModels[0] === model.id || atSelectedModel !== undefined)
-					? {
+					(messages.length == 1 ||
+						(messages.length == 2 &&
+							messages.at(0)?.role === 'system' &&
+							messages.at(1)?.role === 'user')) &&
+					(selectedModels[0] === model.id || atSelectedModel !== undefined)
+						? {
 							background_tasks: {
 								title_generation: $settings?.title?.auto ?? true,
 								tags_generation: $settings?.autoTags ?? true
 							}
 						}
-					: {}),
-
+						: {}),
 				...(stream && (model.info?.meta?.capabilities?.usage ?? false)
 					? {
-							stream_options: {
-								include_usage: true
-							}
+						stream_options: {
+							include_usage: true
 						}
+					}
 					: {})
-			},
-			`${WEBUI_BASE_URL}/api`
-		).catch(async (error) => {
+			};
+		}
+
+		console.log('Debug: Final payload being sent:', JSON.stringify(payload, null, 2));
+
+		const res = await generateOpenAIChatCompletion(localStorage.token, payload, `${WEBUI_BASE_URL}/api`).catch(async (error) => {
 			toast.error(`${error}`);
 
 			responseMessage.error = {
@@ -1716,10 +1855,13 @@
 			if (res.error) {
 				await handleOpenAIError(res.error, responseMessage);
 			} else {
-				if (taskIds) {
-					taskIds.push(res.task_id);
-				} else {
-					taskIds = [res.task_id];
+				// Only add valid task IDs to prevent undefined values
+				if (res.task_id) {
+					if (taskIds) {
+						taskIds.push(res.task_id);
+					} else {
+						taskIds = [res.task_id];
+					}
 				}
 			}
 		}
@@ -1772,7 +1914,10 @@
 
 	const stopResponse = async () => {
 		if (taskIds) {
-			for (const taskId of taskIds) {
+			// Filter out undefined/null task IDs before stopping
+			const validTaskIds = taskIds.filter(taskId => taskId && taskId !== 'undefined');
+			
+			for (const taskId of validTaskIds) {
 				const res = await stopTask(localStorage.token, taskId).catch((error) => {
 					toast.error(`${error}`);
 					return null;
@@ -2035,6 +2180,7 @@
 						{history}
 						title={$chatTitle}
 						bind:selectedModels
+						bind:selectedKnowledgeBases
 						shareEnabled={!!history.currentId}
 						{initNewChat}
 					/>

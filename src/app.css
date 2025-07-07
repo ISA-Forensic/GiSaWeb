@@ -311,6 +311,157 @@ input[type='number'] {
 	outline: none;
 }
 
+/* Remove blue focus borders from chat input areas */
+#chat-input,
+#chat-input-container,
+.chat-input,
+[id*="chat-input"] {
+	outline: none !important;
+	border: none !important;
+	box-shadow: none !important;
+}
+
+#chat-input:focus,
+#chat-input-container:focus,
+.chat-input:focus,
+[id*="chat-input"]:focus {
+	outline: none !important;
+	border: none !important;
+	box-shadow: none !important;
+}
+
+/* Remove all blue focus outlines globally */
+*:focus {
+	outline: none !important;
+}
+
+*:focus-visible {
+	outline: none !important;
+}
+
+/* Specifically target input areas to remove any blue borders or outlines */
+input:focus,
+textarea:focus,
+[contenteditable]:focus,
+.ProseMirror:focus,
+div[contenteditable]:focus {
+	outline: none !important;
+	box-shadow: none !important;
+	border-color: inherit !important;
+}
+
+/* Target the specific chat input that gets ProseMirror-focused class */
+#chat-input.ProseMirror-focused,
+.tiptap.ProseMirror-focused,
+.ProseMirror-focused,
+.tiptap.ProseMirror.ProseMirror-focused {
+	outline: none !important;
+	border: none !important;
+	box-shadow: none !important;
+	border-color: transparent !important;
+}
+
+/* More aggressive targeting for chat input focus */
+div[contenteditable="true"].tiptap.ProseMirror-focused {
+	outline: none !important;
+	border: none !important;
+	box-shadow: none !important;
+}
+
+/* Ultra aggressive focus removal for all possible chat input scenarios */
+*[id*="chat"] *:focus,
+*[class*="chat"] *:focus,
+div[contenteditable]:focus,
+.tiptap:focus,
+#chat-input:focus,
+[id^="chat-input"]:focus,
+[class*="ProseMirror"]:focus {
+	outline: none !important;
+	border-color: inherit !important;
+	box-shadow: none !important;
+}
+
+/* Nuclear option - remove ALL focus styling globally for input elements */
+input:focus,
+textarea:focus,
+[contenteditable]:focus,
+*:focus {
+	outline: none !important;
+	border: none !important;
+	box-shadow: none !important;
+}
+
+/* Specifically target the exact element structure shown in the image */
+div[contenteditable="true"]:focus {
+	outline: none !important;
+	border: none !important;
+	box-shadow: none !important;
+	border-color: transparent !important;
+}
+
+/* Ultra aggressive contenteditable focus removal */
+[contenteditable="true"] {
+	outline: none !important;
+	border: none !important;
+	box-shadow: none !important;
+}
+
+[contenteditable="true"]:focus {
+	outline: 0 !important;
+	border: 0 !important;
+	box-shadow: 0 0 0 0 transparent !important;
+	-webkit-user-select: text !important;
+	user-select: text !important;
+}
+
+/* Browser-specific contenteditable focus removal */
+[contenteditable="true"]:focus-visible {
+	outline: none !important;
+}
+
+/* Webkit specific */
+[contenteditable="true"]:focus::-webkit-input-placeholder {
+	color: transparent !important;
+}
+
+/* Target the exact chat input contenteditable */
+#chat-input[contenteditable="true"],
+#chat-input[contenteditable="true"]:focus,
+#chat-input[contenteditable="true"]:active {
+	outline: none !important;
+	border: none !important;
+	box-shadow: none !important;
+	-webkit-appearance: none !important;
+	appearance: none !important;
+}
+
+/* Target the EXACT class combination from the screenshot */
+#chat-input.tiptap.ProseMirror.ProseMirror-focused,
+div.tiptap.ProseMirror.ProseMirror-focused,
+.tiptap.ProseMirror.ProseMirror-focused[contenteditable="true"],
+div[id="chat-input"][contenteditable="true"].tiptap.ProseMirror.ProseMirror-focused {
+	outline: 0 !important;
+	border: 0 !important;
+	box-shadow: 0 0 0 0 transparent !important;
+	border-color: transparent !important;
+	border-width: 0 !important;
+	border-style: none !important;
+}
+
+/* Override ANY possible border/outline properties */
+#chat-input {
+	border: none !important;
+	outline: none !important;
+}
+
+#chat-input:focus,
+#chat-input:active,
+#chat-input:focus-visible {
+	border: none !important;
+	outline: none !important;
+	box-shadow: none !important;
+}
+
 .ProseMirror p.is-editor-empty:first-child::before {
 	content: attr(data-placeholder);
 	float: left;
@@ -438,3 +589,5 @@ input[type='number'] {
 .tiptap tr {
 	@apply bg-white dark:bg-gray-900 dark:border-gray-850 text-xs;
 }
+
+

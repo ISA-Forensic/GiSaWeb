@@ -6,7 +6,14 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
-import websocket  # NOTE: websocket-client (https://github.com/websocket-client/websocket-client)
+# Optional websocket import for ultra-slim builds
+try:
+    import websocket  # NOTE: websocket-client (https://github.com/websocket-client/websocket-client)
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    websocket = None
+    WEBSOCKET_AVAILABLE = False
+
 from open_webui.env import SRC_LOG_LEVELS
 from pydantic import BaseModel
 
@@ -119,6 +126,10 @@ class ComfyUIGenerateImageForm(BaseModel):
 async def comfyui_generate_image(
     model: str, payload: ComfyUIGenerateImageForm, client_id, base_url, api_key
 ):
+    if not WEBSOCKET_AVAILABLE:
+        log.error("ComfyUI feature not available: websocket-client not installed")
+        return None
+        
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
     workflow = json.loads(payload.workflow.workflow)
 

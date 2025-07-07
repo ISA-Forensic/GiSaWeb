@@ -189,10 +189,14 @@ type Prompt = {
 };
 
 type Document = {
+	id?: string;
 	collection_name: string;
 	filename: string;
 	name: string;
 	title: string;
+	description?: string;
+	source?: string;
+	knowledge_base_id?: string;
 };
 
 type Config = {

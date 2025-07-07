@@ -7,7 +7,14 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import time
 
-from huggingface_hub import snapshot_download
+# Optional huggingface_hub import for ultra-slim builds
+try:
+    from huggingface_hub import snapshot_download
+    HUGGINGFACE_HUB_AVAILABLE = True
+except ImportError:
+    snapshot_download = None
+    HUGGINGFACE_HUB_AVAILABLE = False
+
 from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
@@ -53,6 +60,10 @@ class VectorSearchRetriever(BaseRetriever):
         *,
         run_manager: CallbackManagerForRetrieverRun,
     ) -> list[Document]:
+        if VECTOR_DB_CLIENT is None:
+            log.warning("Vector DB not available, returning empty documents")
+            return []
+        
         result = VECTOR_DB_CLIENT.search(
             collection_name=self.collection_name,
             vectors=[self.embedding_function(query, RAG_EMBEDDING_QUERY_PREFIX)],
@@ -79,6 +90,9 @@ def query_doc(
 ):
     try:
         log.debug(f"query_doc:doc {collection_name}")
+        if VECTOR_DB_CLIENT is None:
+            log.warning("Vector DB not available, returning None")
+            return None
         result = VECTOR_DB_CLIENT.search(
             collection_name=collection_name,
             vectors=[query_embedding],
@@ -97,6 +111,9 @@ def query_doc(
 def get_doc(collection_name: str, user: UserModel = None):
     try:
         log.debug(f"get_doc:doc {collection_name}")
+        if VECTOR_DB_CLIENT is None:
+            log.warning("Vector DB not available, returning None")
+            return None
         result = VECTOR_DB_CLIENT.get(collection_name=collection_name)
 
         if result:
@@ -646,6 +663,10 @@ def get_model_path(model: str, update_model: bool = False):
     snapshot_kwargs["repo_id"] = model
 
     # Attempt to query the huggingface_hub library to determine the local path and/or to update
+    if not HUGGINGFACE_HUB_AVAILABLE:
+        log.warning("huggingface_hub not available, returning model path as-is")
+        return model
+    
     try:
         model_repo_path = snapshot_download(**snapshot_kwargs)
         log.debug(f"model_repo_path: {model_repo_path}")

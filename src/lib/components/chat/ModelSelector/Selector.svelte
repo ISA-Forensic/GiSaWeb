@@ -347,7 +347,7 @@
 		id="model-selector-{id}-button"
 	>
 		<button
-			class="flex w-full text-left px-0.5 outline-hidden bg-transparent truncate {triggerClassName} justify-between font-medium placeholder-gray-400 focus:outline-hidden"
+			class="flex w-full text-left px-0.5 py-1 outline-hidden bg-transparent truncate {triggerClassName} justify-between font-medium placeholder-gray-400 focus:outline-hidden transition-colors hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg min-h-[2.5rem] sm:min-h-0"
 			on:mouseenter={async () => {
 				models.set(
 					await getModels(

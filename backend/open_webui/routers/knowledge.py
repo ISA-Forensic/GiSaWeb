@@ -10,6 +10,8 @@ from open_webui.models.knowledge import (
     KnowledgeUserResponse,
 )
 from open_webui.models.files import Files, FileModel, FileMetadataResponse
+from open_webui.models.users import Users
+from open_webui.models.groups import Groups
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.routers.retrieval import (
     process_file,
@@ -20,9 +22,8 @@ from open_webui.routers.retrieval import (
 from open_webui.storage.provider import Storage
 
 from open_webui.constants import ERROR_MESSAGES
-from open_webui.utils.auth import get_verified_user
-from open_webui.utils.access_control import has_access, has_permission
-
+from open_webui.utils.auth import get_verified_user, get_admin_user
+from open_webui.utils.access_control import has_access, has_permission, get_users_with_access
 
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.models.models import Models, ModelForm
@@ -131,6 +132,14 @@ async def get_knowledge_list(user=Depends(get_verified_user)):
             )
         )
     return knowledge_with_files
+
+
+############################
+# getKnowledgeBasesWithConnections
+############################
+
+
+
 
 
 ############################
@@ -758,3 +767,188 @@ def add_files_to_knowledge_batch(
         **knowledge.model_dump(),
         files=Files.get_file_metadatas_by_ids(existing_file_ids),
     )
+
+
+############################
+# Knowledge Base Permissions Management
+############################
+
+class KnowledgePermissionsForm(BaseModel):
+    read: Optional[dict] = None
+    write: Optional[dict] = None
+
+class KnowledgePermissionsResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    user_id: str
+    access_control: Optional[dict] = None
+    users_with_read_access: List[dict] = []
+    users_with_write_access: List[dict] = []
+    groups_with_read_access: List[dict] = []
+    groups_with_write_access: List[dict] = []
+
+class BulkPermissionsForm(BaseModel):
+    knowledge_base_ids: List[str]
+    access_control: dict
+
+@router.get("/admin/permissions", response_model=List[KnowledgePermissionsResponse])
+async def get_all_knowledge_permissions(user=Depends(get_admin_user)):
+    """
+    Get all knowledge bases with detailed permission information.
+    Admin only endpoint for managing permissions.
+    """
+    knowledge_bases = Knowledges.get_knowledge_bases()
+    
+    permissions_list = []
+    for kb in knowledge_bases:
+        # Get users with access
+        read_users = get_users_with_access("read", kb.access_control)
+        write_users = get_users_with_access("write", kb.access_control)
+        
+        # Get groups with access
+        read_group_ids = kb.access_control.get("read", {}).get("group_ids", []) if kb.access_control else []
+        write_group_ids = kb.access_control.get("write", {}).get("group_ids", []) if kb.access_control else []
+        
+        read_groups = [Groups.get_group_by_id(gid) for gid in read_group_ids if Groups.get_group_by_id(gid)]
+        write_groups = [Groups.get_group_by_id(gid) for gid in write_group_ids if Groups.get_group_by_id(gid)]
+        
+        permissions_list.append(KnowledgePermissionsResponse(
+            id=kb.id,
+            name=kb.name,
+            description=kb.description,
+            user_id=kb.user_id,
+            access_control=kb.access_control,
+            users_with_read_access=[{"id": u.id, "name": u.name, "email": u.email} for u in read_users],
+            users_with_write_access=[{"id": u.id, "name": u.name, "email": u.email} for u in write_users],
+            groups_with_read_access=[{"id": g.id, "name": g.name} for g in read_groups],
+            groups_with_write_access=[{"id": g.id, "name": g.name} for g in write_groups],
+        ))
+    
+    return permissions_list
+
+@router.get("/{id}/permissions", response_model=KnowledgePermissionsResponse)
+async def get_knowledge_permissions(id: str, user=Depends(get_admin_user)):
+    """
+    Get detailed permission information for a specific knowledge base.
+    Admin only endpoint.
+    """
+    knowledge = Knowledges.get_knowledge_by_id(id=id)
+    if not knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+    
+    # Get users with access
+    read_users = get_users_with_access("read", knowledge.access_control)
+    write_users = get_users_with_access("write", knowledge.access_control)
+    
+    # Get groups with access
+    read_group_ids = knowledge.access_control.get("read", {}).get("group_ids", []) if knowledge.access_control else []
+    write_group_ids = knowledge.access_control.get("write", {}).get("group_ids", []) if knowledge.access_control else []
+    
+    read_groups = [Groups.get_group_by_id(gid) for gid in read_group_ids if Groups.get_group_by_id(gid)]
+    write_groups = [Groups.get_group_by_id(gid) for gid in write_group_ids if Groups.get_group_by_id(gid)]
+    
+    return KnowledgePermissionsResponse(
+        id=knowledge.id,
+        name=knowledge.name,
+        description=knowledge.description,
+        user_id=knowledge.user_id,
+        access_control=knowledge.access_control,
+        users_with_read_access=[{"id": u.id, "name": u.name, "email": u.email} for u in read_users],
+        users_with_write_access=[{"id": u.id, "name": u.name, "email": u.email} for u in write_users],
+        groups_with_read_access=[{"id": g.id, "name": g.name} for g in read_groups],
+        groups_with_write_access=[{"id": g.id, "name": g.name} for g in write_groups],
+    )
+
+@router.post("/{id}/permissions", response_model=KnowledgePermissionsResponse)
+async def update_knowledge_permissions(
+    id: str, 
+    form_data: KnowledgePermissionsForm, 
+    user=Depends(get_admin_user)
+):
+    """
+    Update permissions for a specific knowledge base.
+    Admin only endpoint.
+    """
+    knowledge = Knowledges.get_knowledge_by_id(id=id)
+    if not knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+    
+    # Build new access control
+    new_access_control = {}
+    
+    if form_data.read is not None:
+        new_access_control["read"] = form_data.read
+    elif knowledge.access_control and "read" in knowledge.access_control:
+        new_access_control["read"] = knowledge.access_control["read"]
+    
+    if form_data.write is not None:
+        new_access_control["write"] = form_data.write
+    elif knowledge.access_control and "write" in knowledge.access_control:
+        new_access_control["write"] = knowledge.access_control["write"]
+    
+    # Update knowledge base
+    update_form = KnowledgeForm(
+        name=knowledge.name,
+        description=knowledge.description,
+        data=knowledge.data,
+        access_control=new_access_control if new_access_control else None
+    )
+    
+    updated_knowledge = Knowledges.update_knowledge_by_id(id=id, form_data=update_form)
+    if not updated_knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to update knowledge base permissions",
+        )
+    
+    # Return updated permissions
+    return await get_knowledge_permissions(id, user)
+
+@router.post("/admin/permissions/bulk", response_model=dict)
+async def bulk_update_knowledge_permissions(
+    form_data: BulkPermissionsForm,
+    user=Depends(get_admin_user)
+):
+    """
+    Bulk update permissions for multiple knowledge bases.
+    Admin only endpoint.
+    """
+    success_count = 0
+    failed_updates = []
+    
+    for kb_id in form_data.knowledge_base_ids:
+        try:
+            knowledge = Knowledges.get_knowledge_by_id(id=kb_id)
+            if not knowledge:
+                failed_updates.append({"id": kb_id, "error": "Knowledge base not found"})
+                continue
+            
+            # Update knowledge base
+            update_form = KnowledgeForm(
+                name=knowledge.name,
+                description=knowledge.description,
+                data=knowledge.data,
+                access_control=form_data.access_control
+            )
+            
+            updated_knowledge = Knowledges.update_knowledge_by_id(id=kb_id, form_data=update_form)
+            if updated_knowledge:
+                success_count += 1
+            else:
+                failed_updates.append({"id": kb_id, "error": "Failed to update"})
+                
+        except Exception as e:
+            failed_updates.append({"id": kb_id, "error": str(e)})
+    
+    return {
+        "success_count": success_count,
+        "total_requested": len(form_data.knowledge_base_ids),
+        "failed_updates": failed_updates
+    }
